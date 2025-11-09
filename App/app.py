@@ -1,7 +1,11 @@
+# app.py - FINAL CORRECTED VERSION
+
+# 1. Import necessary libraries
 from fastapi import FastAPI
 from pydantic import BaseModel
 import pandas as pd
 import joblib
+import numpy as np # <-- Make sure to import numpy
 
 # === Initialize app ===
 app = FastAPI(
@@ -10,18 +14,31 @@ app = FastAPI(
     version="1.0"
 )
 
-# === Load trained model ===
-model = joblib.load("best_xgb_pipeline.pkl")
+# === Load trained model pipeline ===
+# This pipeline includes your preprocessor and the XGBoost model
+try:
+    model_pipeline = joblib.load("best_xgb_pipeline.pkl")
+    print("Model pipeline loaded successfully.")
+except FileNotFoundError:
+    print("Error: best_xgb_pipeline.pkl not found. Make sure it's in the App folder.")
+    model_pipeline = None
 
 # === Define input schema ===
+# These fields MUST match the columns your pipeline was trained on.
 class FundingInput(BaseModel):
-    managing_agency_name: str
-    us_sector_name: str
     fiscal_year: int
-    implementing_partner_name: str | None = None
-    activity_title: str | None = None
-    us_category_name: str | None = None
-    # Add or remove fields based on your original training dataset columns
+    is_refund: int
+    managing_agency_name: str
+    funding_agency_name: str
+    sector: str  # <-- Use 'sector', not 'us_sector_name'
+    
+    # These are your engineered features. The user of the API
+    # would need to provide these. We can give them default values.
+    lag_1: float = 0
+    lag_2: float = 0
+    rolling_mean_3yr: float = 0
+    rolling_std_3yr: float = 0
+    funding_growth_rate: float = 0
 
 # === Define prediction endpoint ===
 @app.post("/predict")
@@ -29,10 +46,21 @@ def predict_funding(data: FundingInput):
     """
     Predicts funding amount given input features.
     """
-    df = pd.DataFrame([data.dict()])
-    prediction = model.predict(df)
+    if not model_pipeline:
+        return {"error": "Model is not loaded."}
+
+    # Convert the Pydantic model to a pandas DataFrame
+    input_df = pd.DataFrame([data.dict()])
+    
+    # The pipeline will handle all preprocessing (OneHotEncoding, etc.)
+    # and then make a prediction.
+    log_prediction = model_pipeline.predict(input_df)
+    
+    # CRITICAL: Reverse the log-transformation to get the actual dollar amount
+    prediction_amount = np.expm1(log_prediction)[0]
+    
     return {
-        "predicted_constant_dollar_amount": float(prediction[0])
+        "predicted_constant_dollar_amount": float(prediction_amount)
     }
 
 # === Root endpoint ===
